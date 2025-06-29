@@ -1,6 +1,7 @@
 import mysql.connector
 import logging
 from datetime import datetime
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -26,19 +27,43 @@ class MySQLHandler:
         """Create database tables from SQL script"""
         try:
             cursor = self.conn.cursor()
-            with open("sql/create_tables.sql", "r") as f:
+            script_path = "sql/create_tables.sql"
+            
+            # Verify SQL file exists
+            if not os.path.exists(script_path):
+                logging.error(f"SQL script file not found: {script_path}")
+                return False
+                
+            with open(script_path, "r") as f:
                 sql_script = f.read()
-                for result in cursor.execute(sql_script, multi=True):
-                    if result.with_rows:
-                        logging.debug(f"Executed: {result.statement}")
+            
+            # Split SQL script into individual statements
+            statements = [stmt.strip() for stmt in sql_script.split(';') if stmt.strip()]
+            
+            for statement in statements:
+                try:
+                    cursor.execute(statement)
+                    logging.debug(f"Executed SQL: {statement[:50]}...")
+                except mysql.connector.Error as err:
+                    # Handle "already exists" errors gracefully
+                    if "already exists" in str(err).lower():
+                        logging.warning(f"Table creation skipped: {err}")
+                    else:
+                        logging.error(f"Error executing SQL: {err}")
+                        raise
+            
             self.conn.commit()
             logging.info("Database tables created successfully")
             return True
         except FileNotFoundError:
-            logging.error("SQL script file not found: sql/create_tables.sql")
+            logging.error(f"SQL script file not found: {script_path}")
             return False
         except mysql.connector.Error as err:
             logging.error(f"Error creating tables: {err}")
+            self.conn.rollback()
+            return False
+        except Exception as e:
+            logging.error(f"Unexpected error creating tables: {e}")
             self.conn.rollback()
             return False
         finally:

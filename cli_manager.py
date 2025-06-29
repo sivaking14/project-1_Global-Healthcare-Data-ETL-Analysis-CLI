@@ -19,7 +19,8 @@ class CLIManager:
 
         # Fetch data command
         fetch_parser = subparsers.add_parser('fetch_data', help='Fetch and load data')
-        fetch_parser.add_argument('--country', required=True, help='Country name')
+        fetch_parser.add_argument('--country', required=True, 
+                                 help='Country name or "all" for all countries')
         fetch_parser.add_argument('--start_date', help='Start date (YYYY-MM-DD)')
         fetch_parser.add_argument('--end_date', help='End date (YYYY-MM-DD)')
         fetch_parser.add_argument('--data_type', choices=['cases', 'vaccinations', 'all'], 
@@ -80,32 +81,64 @@ class CLIManager:
             logging.error("Failed to fetch data from API")
             return
             
-        country_data = next(
-            (data for data in dataset.values() if data.get('location') == args.country), 
-            None
-        )
+        # Handle "all" countries
+        if args.country.lower() == "all":
+            self._fetch_all_countries(dataset, args.data_type)
+        else:
+            # Process single country
+            country_data = next(
+                (data for data in dataset.values() if data.get('location') == args.country), 
+                None
+            )
+            if country_data:
+                self._process_country_data(country_data, args.data_type)
+            else:
+                logging.error(f"Data not found for country: {args.country}")
+
+    def _fetch_all_countries(self, dataset, data_type):
+        """Fetch and process data for all countries"""
+        total_countries = len(dataset)
+        processed = 0
+        skipped = 0
         
-        if not country_data:
-            logging.error(f"Data not found for country: {args.country}")
-            return
+        for country_code, country_data in dataset.items():
+            # Skip aggregated regions (OWID = Our World in Data aggregates)
+            if country_code.startswith("OWID_"):
+                skipped += 1
+                continue
+                
+            try:
+                country_name = country_data.get('location', f"Unknown-{country_code}")
+                logging.info(f"Processing {country_name} ({processed+1}/{total_countries})")
+                self._process_country_data(country_data, data_type)
+                processed += 1
+            except Exception as e:
+                logging.error(f"Failed to process {country_name}: {e}")
+                skipped += 1
+                
+        logging.info(f"Processed {processed} countries, skipped {skipped} aggregates")
+
+    def _process_country_data(self, country_data, data_type):
+        """Process data for a single country"""
+        country_name = country_data.get('location', 'Unknown')
         
         # Process cases data
-        if args.data_type in ['cases', 'all']:
+        if data_type in ['cases', 'all']:
             cases = self.transformer.transform_cases(country_data)
             if cases:
-                self.db_handler.insert_data('daily_cases', cases)
-                logging.info(f"Inserted {len(cases)} case records")
+                inserted = self.db_handler.insert_data('daily_cases', cases)
+                logging.info(f"Inserted {inserted} case records for {country_name}")
             else:
-                logging.warning("No case data to insert")
+                logging.warning(f"No case data for {country_name}")
         
         # Process vaccination data
-        if args.data_type in ['vaccinations', 'all']:
+        if data_type in ['vaccinations', 'all']:
             vaccines = self.transformer.transform_vaccinations(country_data)
             if vaccines:
-                self.db_handler.insert_data('vaccination_data', vaccines)
-                logging.info(f"Inserted {len(vaccines)} vaccination records")
+                inserted = self.db_handler.insert_data('vaccination_data', vaccines)
+                logging.info(f"Inserted {inserted} vaccination records for {country_name}")
             else:
-                logging.warning("No vaccination data to insert")
+                logging.warning(f"No vaccination data for {country_name}")
 
     def _handle_query(self, args):
         if args.query_type == 'total_cases':
